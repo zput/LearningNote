@@ -1,3 +1,85 @@
+# 0.重要的知识点
+
+1. MySQL逻辑架构
+  1.1. 连接层
+  1.2. 服务层
+  1.3. 引擎层(存储引擎是基于表的，而不是数据库)
+  1.4. 存储层
+
+2. 如何修改字符集(查看1.3)
+
+3. 日志
+  3.1. 查询日志
+  3.2. 错误日志
+  3.3. 二进制日志
+
+- 4. 分析慢SQL的步骤
+  - ~~first:找到是那些sql慢.~~
+    - 4.1. 慢查询的开启，设置阈值(如超过5秒钟的就是慢SQL)并捕获。
+  - ~~second:开始分析这些sql.~~
+    - 4.2. explain + 慢SQL分析。
+      - 查询语句写的差。
+        - 关联 查询太多`join`（设计缺陷或者不得已的需求）。
+      - 索引失效：索引建了，但是没有用上。
+    - 4.3. show Profile查询SQL在MySQL数据库中的执行细节和生命周期情况。
+    - 4.4. MySQL数据库服务器的参数调优。
+
+5. SQL执行顺序
+
+```shell
+select              # 5 ---->
+	... 
+from                # 1
+	... 
+where               # 2
+	.... 
+group by            # 3
+	... 
+having              # 4 ---->
+	... 
+order by            # 6
+	... 
+limit               # 7
+	[offset]
+```
+
+6. join
+![如何写出join语句](https://raw.githubusercontent.com/zput/myPicLib/master/zput.github.io/20201203160509.png)
+
+
+- 7. 索引
+  - what: 数据结构
+  - why:
+    - 索引的优势和劣势
+      - 优势：
+        - 查找：类似大学图书馆的书目索引，提高数据检索的效率，降低数据库的IO成本。
+        - 排序：通过索引対数据进行排序，降低数据排序的成本，降低了CPU的消耗。
+      - 劣势：
+        - 实际上索引也是一张表，该表保存了主键与索引字段，并指向实体表的记录，所以索引列也是要占用空间的。
+        - 虽然索引大大提高了查询速度，但是同时会降低表的更新速度，例如对表频繁的进行`INSERT`、`UPDATE`和`DELETE`。因为更新表的时候，MySQL不仅要保存数据，还要保存一下索引文件每次更新添加的索引列的字段，都会调整因为更新所带来的键值变化后的索引信息。
+        - 索引只是提高效率的一个因素，如果MySQL有大数据量的表，就需要花时间研究建立最优秀的索引。
+
+  - how: 
+    - **重点：索引会影响到MySQL查找(WHERE的查询条件)和排序(ORDER BY)两大功能！**
+      - 单值索引：一个索引只包含单个列，一个表可以有多个单列索引。
+      - 唯一索引：索引列的值必须唯一，但是允许**空值**。
+      - 复合索引：一个索引包含多个字段。
+    - 什么时候需要建立索引：
+      - 主键:主键自动建立主键索引（唯一 + 非空）。
+      - where/order by:
+        - 频繁作为查询条件的字段应该创建索引。
+        - 查询中统计或者分组字段（group by也和索引有关）。
+        - 查询中排序的字段，排序字段若通过索引去访问将大大提高排序速度。
+      - 查询中与其他表关联的字段，**外键关系**建立索引。
+
+
+
+
+
+
+
+
+
 # 1.MySQL环境
 
 ## 1.1.环境安装
@@ -14,33 +96,11 @@ docker run -p 3306:3306 --name mysql \
 -v /root/mysql/log:/var/log/mysql \
 -v /root/mysql/data:/var/lib/mysql \
 -v /root/mysql/conf:/etc/mysql \
--e MYSQL_ROOT_PASSWORD=333 \
+-e MYSQL_ROOT_PASSWORD=qwer \
 -d mysql:5.7
 
 # 3、mysql配置 /root/mysql/conf/my.conf
-[client]
-#mysqlde utf8字符集默认为3位的，不支持emoji表情及部分不常见的汉字，故推荐使用utf8mb4
-default-character-set=utf8
-
-[mysql]
-default-character-set=utf8
-
-[mysqld]
-#设置client连接mysql时的字符集,防止乱码
-init_connect='SET collation_connection = utf8_general_ci'
-init_connect='SET NAMES utf8'
-
-#数据库默认字符集
-character-set-server=utf8
-
-#数据库字符集对应一些排序等规则，注意要和character-set-server对应
-collation-server=utf8_general_ci
-
-# 跳过mysql程序起动时的字符参数设置 ，使用服务器端字符集设置
-skip-character-set-client-handshake
-
-# 禁止MySQL对外部连接进行DNS解析，使用这一选项可以消除MySQL进行DNS解析的时间。但需要注意，如果开启该选项，则所有远程主机连接授权都要使用IP地址方式，否则MySQL将无法正常处理连接请求！
-skip-name-resolve
+# 参照1.4.配置文件!!!
 
 # 4、重启mysql容器
 docker restart mysql
@@ -72,93 +132,89 @@ docker exec -it mysql /bin/bash
 ## 1.3.修改字符集
 
 ```shell
-# 1、进入到mysql数据库并查看字符集
-# show variables like 'character%';
-# show variables like '%char%';
+# determine which charset/collations are available
+SHOW CHARSET;
+SHOW COLLATION;
 
-mysql> show variables like 'character%';
-+--------------------------+----------------------------+
-| Variable_name            | Value                      |
-+--------------------------+----------------------------+
-| character_set_client     | utf8                       |
-| character_set_connection | utf8                       |
-| character_set_database   | utf8                       |
-| character_set_filesystem | binary                     |
-| character_set_results    | utf8                       |
-| character_set_server     | utf8                       |
-| character_set_system     | utf8                       |
-| character_sets_dir       | /usr/share/mysql/charsets/ |
-+--------------------------+----------------------------+
-8 rows in set (0.00 sec)
+# check charset
+SHOW VARIABLES LIKE '%character%';
+SHOW VARIABLES LIKE '%collation%';
 
-mysql> show variables like '%char%';
-+--------------------------+----------------------------+
-| Variable_name            | Value                      |
-+--------------------------+----------------------------+
-| character_set_client     | utf8                       |
-| character_set_connection | utf8                       |
-| character_set_database   | utf8                       |
-| character_set_filesystem | binary                     |
-| character_set_results    | utf8                       |
-| character_set_server     | utf8                       |
-| character_set_system     | utf8                       |
-| character_sets_dir       | /usr/share/mysql/charsets/ |
-+--------------------------+----------------------------+
-8 rows in set (0.01 sec)
+# set charset (in configure file -> my.cnf)
+[mysqld]
+character-set-server=utf8mb4
+collation-server=utf8mb4_general_ci
+
+# check database/table charset:检查数据库/表的创建信息，注意这里可以在下一步中的命令改，就是它不是最早创建时的信息，未来的命令可以改变这个输出结果。
+SHOW CREATE DATABASE databasename;
+SHOW CREATE TABLE tablename;
+
+# change the database/table charset：改变数据库/表的字符
+ALTER DATABASE databasename CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
+ALTER TABLE tablename CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
+
+# set when create database/table：可以在创建数据库/表的时候指定字符
+CREATE DATABASE new_db CHARACTER SET utf8mb4 DEFAULT COLLATE utf8mb4_general_ci;
+CREATE TABLE new_table (id INT) CHARSET utf8mb4 COLLATE utf8mb4_general_ci;
+
+# Note： I heard that in Mysql utf8 is not the true utf8，utf8mb4 is the real utf8. so, if you have special character that can't save to mysql, maybe you should use utf8mb4 and utf8mb4_general_ci
 ```
-
-
 
 `MySQL5.7`配置文件位置是`/etc/my.cnf`或者`/etc/mysql/my.cnf`，如果字符集不是`utf-8`直接进入配置文件修改即可。
 
 ```shell
 [client]
-default-character-set=utf8
+#mysqlde utf8字符集默认为3位的，不支持emoji表情及部分不常见的汉字，故推荐使用utf8mb4
+default-character-set=utf8mb4
 
 [mysql]
-default-character-set=utf8
+default-character-set=utf8mb4
 
 [mysqld]
-# 设置client连接mysql时的字符集,防止乱码
-init_connect='SET NAMES utf8'
-init_connect='SET collation_connection = utf8_general_ci'
+#设置client**连接**mysql时的字符集,防止乱码
+init_connect='SET collation_connection = utf8mb4_general_ci'
+init_connect='SET NAMES utf8mb4'
 
-# 数据库默认字符集
-character-set-server=utf8
-
+#数据库默认字符集
+character-set-server=utf8mb4
 #数据库字符集对应一些排序等规则，注意要和character-set-server对应
-collation-server=utf8_general_ci
+collation-server=utf8mb4_general_ci
 
 # 跳过mysql程序起动时的字符参数设置 ，使用服务器端字符集设置
 skip-character-set-client-handshake
 
 # 禁止MySQL对外部连接进行DNS解析，使用这一选项可以消除MySQL进行DNS解析的时间。但需要注意，如果开启该选项，则所有远程主机连接授权都要使用IP地址方式，否则MySQL将无法正常处理连接请求！
 skip-name-resolve
+
+# 数据库错误日志文件
+log-error = /var/log/mysql/error.log
+
 ```
 
 **注意：安装`MySQL`完毕之后，第一件事就是修改字符集编码。**
 
 ## 1.4.配置文件
 
-**`MySQL`配置文件讲解：https://www.cnblogs.com/gaoyuechen/p/10273102.html**
+**`MySQL`配置文件讲解：https://gist.github.com/zput/9609dbbbbe2aa1f2f516f62c699fd682**
 
-1、二进制日志`log-bin`：主从复制。
+
 
 ```shell
-# my,cnf
-# 开启mysql binlog功能
-log-bin=mysql-bin
+# 查询错误日志的位置
+show variables like 'log_error';
+show variables like 'general_log_file';
+show variables like 'slow_query_log_file';
 ```
 
-2、错误日志`log-error`：默认是关闭的，记录严重的警告和错误信息，每次启动和关闭的详细信息等。
+1、错误日志`log-error`：默认是关闭的，记录严重的警告和错误信息，每次启动和关闭的详细信息等。
 
 ```shell
 # my,cnf
 # 数据库错误日志文件
-log-error = error.log
+log-error = /var/log/mysql/error.log
 ```
 
-3、查询日志`log`：默认关闭，记录查询的`sql`语句，如果开启会降低`MySQL`整体的性能，因为记录日志需要消耗系统资源。
+2、查询日志`log`：默认关闭，记录查询的`sql`语句，如果开启会降低`MySQL`整体的性能，因为记录日志需要消耗系统资源。
 
 ```shell
 # my,cnf
@@ -166,6 +222,16 @@ log-error = error.log
 slow_query_log = 1
 slow_query_log_file = slow.log
 ```
+
+3、二进制日志`log-bin`：主从复制。
+
+```shell
+# my,cnf
+# 开启mysql binlog功能
+log-bin=mysql-bin
+```
+
+
 
 4、数据文件。
 
@@ -188,7 +254,7 @@ slow_query_log_file = slow.log
 
 # 2.MySQL逻辑架构
 
-![MySQL逻辑架构](https://img-blog.csdn.net/20180831173911997?watermark/2/text/aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3pfcnlhbg==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70)
+![MySQL逻辑架构](https://raw.githubusercontent.com/zput/myPicLib/master/zput.github.io/20201203152459.png)
 
 - `Connectors`：指的是不同语言中与SQL的交互。
 - `Connection Pool`：管理缓冲用户连接，线程处理等需要缓存的需求。**MySQL数据库的连接层。**
@@ -209,9 +275,7 @@ MySQL数据库和其他数据库相比，MySQL有点与众不同，主要体现�
 
 > 逻辑架构分层
 
-
-
-![MySQL逻辑架构](https://img-blog.csdnimg.cn/20200801165252510.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L1JyaW5nb18=,size_16,color_FFFFFF,t_70)
+![MySQL逻辑架构](https://raw.githubusercontent.com/zput/myPicLib/master/zput.github.io/20201203152555.png)
 
 - 连接层：最上层是一些客户端和连接服务，包含本地sock通信和大多数基于客户端/服务端工具实现的类似于`tcp/ip`的通信。主要完成一些类似于连接处理、授权认证、及相关的安全方案。在该层上引入了线程池的概念，为通过认证安全接入的客户端提供线程。同样在该层上可以实现基于`SSL`的安全链接。服务器也会为安全接入的每个客户端验证它所具有的操作权限。
 
@@ -227,7 +291,7 @@ MySQL数据库和其他数据库相比，MySQL有点与众不同，主要体现�
 mysql> show engines;
 ```
 
-![存储引擎](https://img-blog.csdnimg.cn/20200801170442428.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L1JyaW5nb18=,size_16,color_FFFFFF,t_70)
+![存储引擎](https://raw.githubusercontent.com/zput/myPicLib/master/zput.github.io/20201203152645.png)
 
 `show variables like 'default_storage_engine%';`查看当前数据库正在使用的存储引擎。
 
@@ -256,9 +320,9 @@ mysql> show variables like 'default_storage_engine%';
 # 4.SQL性能下降的原因
 
 - 查询语句写的差。
+  - 关联 查询太多`join`（设计缺陷或者不得已的需求）。
 - 索引失效：索引建了，但是没有用上。
-- 关联 查询太多`join`（设计缺陷或者不得已的需求）。
-- 服务器调优以及各个参数的设置（缓冲、线程数等）。
+- ~~服务器调优以及各个参数的设置（缓冲、线程数等）。~~
 
 # 5.SQL执行顺序
 
@@ -279,9 +343,11 @@ limit               # 7
 	[offset]
 ```
 
+
+
 # 6.七种JOIN理论
 
-![七种JOIN理论](https://img-blog.csdnimg.cn/20200801212011559.jpg?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L1JyaW5nb18=,size_16,color_FFFFFF,t_70)
+![七种JOIN理论](https://raw.githubusercontent.com/zput/myPicLib/master/zput.github.io/20201203152719.png)
 
 ```sql
 /* 1 */
@@ -322,7 +388,7 @@ SELECT <select_list> FROM TableA A RIGHT JOIN TableB B ON A.Key = B.Key WHERE A.
 
 MySQL官方对索引的定义为：**索引（INDEX）是帮助MySQL高效获取数据的数据结果。**
 
-从而可以获得索引的本质：**索引是排好序的快速查找数据结构。**
+从而可以获得索引的本质：**索引是排好序的快速查找```数据结构```。**
 
 索引的目的在于提高查询效率，可以类比字典的目录。如果要查`mysql`这个这个单词，我们肯定要先定位到`m`字母，然后从上往下找`y`字母，再找剩下的`sql`。如果没有索引，那么可能需要`a---z`，这样全字典扫描，如果我想找`Java`开头的单词呢？如果我想找`Oracle`开头的单词呢？？？
 
@@ -368,7 +434,7 @@ overlay          40G   16G   23G  41%
 索引分类：
 
 - 单值索引：一个索引只包含单个列，一个表可以有多个单列索引。
-- 唯一索引：索引列的值必须唯一，但是允许空值。
+- 唯一索引：索引列的值必须唯一，但是允许**空值**。
 - 复合索引：一个索引包含多个字段。
 
 **建议：一张表建的索引最好不要超过5个！**
@@ -423,22 +489,19 @@ ALTER TABLE tabName ADD FULLTEXT indexName(column_list);
 
 ## 7.4.哪些情况需要建索引
 
-- 主键自动建立主键索引（唯一 + 非空）。
-- 频繁作为查询条件的字段应该创建索引。
-- 查询中与其他表关联的字段，外键关系建立索引。
-- 查询中排序的字段，排序字段若通过索引去访问将大大提高排序速度。
-- 查询中统计或者分组字段（group by也和索引有关）。
-
-
-
+- 主键:主键自动建立主键索引（唯一 + 非空）。
+- where/order by:
+  - 频繁作为查询条件的字段应该创建索引。
+  - 查询中统计或者分组字段（group by也和索引有关）。
+  - 查询中排序的字段，排序字段若通过索引去访问将大大提高排序速度。
+- 查询中与其他表关联的字段，**外键关系**建立索引。
 ## 7.5.那些情况不要建索引
 
 - 记录太少的表。
 - 经常增删改的表。
-
 - 频繁更新的字段不适合创建索引。
 - Where条件里用不到的字段不创建索引。
-- 假如一个表有10万行记录，有一个字段A只有true和false两种值，并且每个值的分布概率大约为50%，那么对A字段建索引一般不会提高数据库的查询速度。索引的选择性是指索引列中不同值的数目与表中记录数的比。如果一个表中有2000条记录，表索引列有1980个不同的值，那么这个索引的选择性就是1980/2000=0.99。一个索引的选择性越接近于1，这个索引的效率就越高。
+  - 假如一个表有10万行记录，有一个字段A只有true和false两种值，并且每个值的分布概率大约为50%，那么对A字段建索引一般不会提高数据库的查询速度。索引的选择性是指索引列中不同值的数目与表中记录数的比。如果一个表中有2000条记录，表索引列有1980个不同的值，那么这个索引的选择性就是1980/2000=0.99。一个索引的选择性越接近于1，这个索引的效率就越高。
 
 # 8.性能分析
 
@@ -476,14 +539,16 @@ possible_keys: NULL
 
 - `id`：表的读取顺序。
 - `select_type`：数据读取操作的操作类型。
+- `type`：访问类型排列。
 - `possible_keys`：哪些索引可以使用。
 - `key`：哪些索引被实际使用。
 - `ref`：表之间的引用。
 - `rows`：每张表有多少行被优化器查询。
+- `Extra`：包含不适合在其他列中显示但十分重要的额外信息。
 
 ## 8.2.EXPLAIN字段
 
-> id
+####  id
 
 `id`：表的读取和加载顺序。
 
@@ -495,7 +560,7 @@ possible_keys: NULL
 
 
 
-> select_type
+#### select_type
 
 `select_type`：数据查询的类型，主要是用于区别，普通查询、联合查询、子查询等的复杂查询。
 
@@ -508,7 +573,7 @@ possible_keys: NULL
 
 
 
-> type
+#### type
 
 `type`：访问类型排列。
 
@@ -527,7 +592,7 @@ possible_keys: NULL
 
 
 
-> possible_keys 和 key
+#### possible_keys 和 key
 
 `possible_keys`：显示可能应用在这张表中的索引，一个或者多个。查询涉及到的字段上若存在索引，则该索引将被列出，**但不一定被查询实际使用。**
 
@@ -575,22 +640,16 @@ possible_keys: PRIMARY
         Extra: Using where; Using index
 1 row in set, 1 warning (0.00 sec)
 ```
-
-
-
-> ref
+#### ref
 
 `ref`：显示索引的哪一列被使用了，如果可能的话，是一个常数。哪些列或常量被用于查找索引列上的值。
-
-
-
-> rows
+#### rows
 
 `rows`：根据表统计信息及索引选用情况，大致估算出找到所需的记录需要读取的行数。
 
 
 
-> Extra
+#### Extra
 
 `Extra`：包含不适合在其他列中显示但十分重要的额外信息。
 
@@ -1266,13 +1325,13 @@ EXPLAIN SELECT * FROM `test03` WHERE `c1` = 'a1' AND `c4` = 'a4' GROUP BY `c3`,`
 
 4、show Profile。
 
-5、运维经理 OR DBA，进行MySQL数据库服务器的参数调优。
+5、运维经理 or DBA，进行MySQL数据库服务器的参数调优。
 
 
 
 总结（大纲）：
 
-1、慢查询的开启并捕获。
+1、慢查询的开启，设置阈值并捕获。
 
 2、explain + 慢SQL分析。
 
