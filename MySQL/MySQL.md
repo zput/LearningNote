@@ -71,9 +71,9 @@ limit               # 7
         - 查询中统计或者分组字段（group by也和索引有关）。
         - 查询中排序的字段，排序字段若通过索引去访问将大大提高排序速度。
       - 查询中与其他表关联的字段，**外键关系**建立索引。
-
-
-
+    - 索引分析
+      - 从9.1.单表索引分析-->范围之后的索引会失效。
+      - 从9.2.两表索引分析--->左连接将索引创建在右表上更合适。
 
 
 
@@ -538,15 +538,17 @@ possible_keys: NULL
 可以查看以下信息：
 
 - `id`：表的读取顺序。
-- `select_type`：数据读取操作的操作类型。
-- `type`：访问类型排列。
+- `select_type`: 查询（select；query）类型.
+- `type`：访问类型排列。The type column of EXPLAIN output describes how tables are joined.
 - `possible_keys`：哪些索引可以使用。
 - `key`：哪些索引被实际使用。
 - `ref`：表之间的引用。
 - `rows`：每张表有多少行被优化器查询。
 - `Extra`：包含不适合在其他列中显示但十分重要的额外信息。
 
-## 8.2.EXPLAIN字段
+## 8.2.EXPLAIN输出字段
+
+[官方解释](https://dev.mysql.com/doc/refman/5.7/en/explain-output.html)
 
 ####  id
 
@@ -562,7 +564,7 @@ possible_keys: NULL
 
 #### select_type
 
-`select_type`：数据查询的类型，主要是用于区别，普通查询、联合查询、子查询等的复杂查询。
+`select_type`：查询（select；query）类型.，主要是用于区别，普通查询、联合查询、子查询等的复杂查询。
 
 - `SIMPLE`：简单的`SELECT`查询，查询中不包含子查询或者`UNION `。
 - `PRIMARY`：查询中如果包含任何复杂的子部分，最外层查询则被标记为`PRIMARY`。
@@ -742,9 +744,9 @@ possible_keys: NULL
 
 # 9.索引分析
 
-## 9.1.单表索引分析
+## 9.1.单表索引分析-->范围之后的索引会失效
 
-> 数据准备
+#### 9.1.1. 数据准备
 
 ```sql
 DROP TABLE IF EXISTS `article`;
@@ -770,7 +772,7 @@ INSERT INTO `article`(`author_id`, `category_id`, `views`, `comments`, `title`, 
 
 > 案例：查询`category_id`为1且`comments`大于1的情况下，`views`最多的`article_id`。
 
-1、编写SQL语句并查看SQL执行计划。
+#### 9.1.2. 编写SQL语句并查看SQL执行计划。
 
 ```shell
 # 1、sql语句
@@ -796,46 +798,94 @@ possible_keys: NULL
 
 
 
-2、创建索引`idx_article_ccv`。
+#### 9.1.2. 创建索引`idx_article_ccv`。
 
 ```sql
 CREATE INDEX idx_article_ccv ON article(category_id,comments,views);
 ```
 
-3、查看当前索引。
+#### 9.1.3. 查看当前索引
 
-![show index](https://img-blog.csdnimg.cn/20200803134154162.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L1JyaW5nb18=,size_16,color_FFFFFF,t_70)
+```shell
+mysql> show index from article;
++---------+------------+-----------------+--------------+-------------+-----------+-------------+----------+--------+------+------------+---------+---------------+
+| Table   | Non_unique | Key_name        | Seq_in_index | Column_name | Collation | Cardinality | Sub_part | Packed | Null | Index_type | Comment | Index_comment |
++---------+------------+-----------------+--------------+-------------+-----------+-------------+----------+--------+------+------------+---------+---------------+
+| article |          0 | PRIMARY         |            1 | id          | A         |           5 |     NULL | NULL   |      | BTREE      |         |               |
+| article |          1 | idx_article_ccv |            1 | category_id | A         |           3 |     NULL | NULL   |      | BTREE      |         |               |
+| article |          1 | idx_article_ccv |            2 | comments    | A         |           5 |     NULL | NULL   |      | BTREE      |         |               |
+| article |          1 | idx_article_ccv |            3 | views       | A         |           5 |     NULL | NULL   |      | BTREE      |         |               |
++---------+------------+-----------------+--------------+-------------+-----------+-------------+----------+--------+------+------------+---------+---------------+
+4 rows in set (0.00 sec)
+```
 
-4、查看现在SQL语句的执行计划。
+#### 9.1.4. 查看现在SQL语句的执行计划。
 
-![explain](https://img-blog.csdnimg.cn/20200803134549914.png)
+```shell
+mysql>  EXPLAIN SELECT id,author_id FROM article WHERE category_id = 1 AND comments > 1 ORDER BY views DESC LIMIT 1;
++----+-------------+---------+------------+-------+-----------------+-----------------+---------+------+------+----------+---------------------------------------+
+| id | select_type | table   | partitions | type  | possible_keys   | key             | key_len | ref  | rows | filtered | Extra                                 |
++----+-------------+---------+------------+-------+-----------------+-----------------+---------+------+------+----------+---------------------------------------+
+|  1 | SIMPLE      | article | NULL       | range | idx_article_ccv | idx_article_ccv | 8       | NULL |    2 |   100.00 | Using index condition; Using filesort |
++----+-------------+---------+------------+-------+-----------------+-----------------+---------+------+------+----------+---------------------------------------+
+1 row in set, 1 warning (0.00 sec)
+```
 
-我们发现，创建符合索引`idx_article_ccv`之后，虽然解决了全表扫描的问题，但是在`order by`排序的时候没有用到索引，MySQL居然还是用的`Using filesort`，为什么？
 
-5、我们试试把SQL修改为`SELECT id,author_id FROM article WHERE category_id = 1 AND comments = 1 ORDER BY views DESC LIMIT 1;`看看SQL的执行计划。
+>>>我们发现，创建符合索引`idx_article_ccv`之后，虽然解决了全表扫描的问题，但是在`order by`排序的时候没有用到索引，MySQL居然还是用的`Using filesort`，为什么？
 
-![explain](https://img-blog.csdnimg.cn/20200803135228945.png)
+#### 9.1.5. 我们试试把SQL修改为`SELECT id,author_id FROM article WHERE category_id = 1 AND comments = 1 ORDER BY views DESC LIMIT 1;`看看SQL的执行计划。
 
-推论：当`comments > 1`的时候`order by`排序`views`字段索引就用不上，但是当`comments = 1`的时候`order by`排序`views`字段索引就可以用上！！！**所以，范围之后的索引会失效。**
+```shell
+mysql> EXPLAIN SELECT id,author_id FROM article WHERE category_id = 1 AND comments = 1 ORDER BY views DESC LIMIT 1;
++----+-------------+---------+------------+------+-----------------+-----------------+---------+-------------+------+----------+-------------+
+| id | select_type | table   | partitions | type | possible_keys   | key             | key_len | ref         | rows | filtered | Extra       |
++----+-------------+---------+------------+------+-----------------+-----------------+---------+-------------+------+----------+-------------+
+|  1 | SIMPLE      | article | NULL       | ref  | idx_article_ccv | idx_article_ccv | 8       | const,const |    1 |   100.00 | Using where |
++----+-------------+---------+------------+------+-----------------+-----------------+---------+-------------+------+----------+-------------+
+1 row in set, 1 warning (0.00 sec)
+```
 
-6、我们现在知道**范围之后的索引会失效**，原来的索引`idx_article_ccv`最后一个字段`views`会失效，那么我们如果删除这个索引，创建`idx_article_cv`索引呢？？？？
+>>>推论：当`comments > 1`的时候`order by`排序`views`字段索引就用不上，但是当`comments = 1`的时候`order by`排序`views`字段索引就可以用上！！！**所以，范围之后的索引会失效。**
+
+#### 9.1.6. 我们现在知道**范围之后的索引会失效**，原来的索引`idx_article_ccv`最后一个字段`views`会失效，那么我们如果删除这个索引，创建`idx_article_cv`索引呢？？？？
 
 ```sql
+drop index idx_article_ccv on article;
 /* 创建索引 idx_article_cv */
 CREATE INDEX idx_article_cv ON article(category_id,views);
+show index from article;
 ```
 
 查看当前的索引
 
-![show index](https://img-blog.csdnimg.cn/20200803140542912.png)
+```shell
+mysql> show index from article;
++---------+------------+----------------+--------------+-------------+-----------+-------------+----------+--------+------+------------+---------+---------------+
+| Table   | Non_unique | Key_name       | Seq_in_index | Column_name | Collation | Cardinality | Sub_part | Packed | Null | Index_type | Comment | Index_comment |
++---------+------------+----------------+--------------+-------------+-----------+-------------+----------+--------+------+------------+---------+---------------+
+| article |          0 | PRIMARY        |            1 | id          | A         |           5 |     NULL | NULL   |      | BTREE      |         |               |
+| article |          1 | idx_article_cv |            1 | category_id | A         |           3 |     NULL | NULL   |      | BTREE      |         |               |
+| article |          1 | idx_article_cv |            2 | views       | A         |           5 |     NULL | NULL   |      | BTREE      |         |               |
++---------+------------+----------------+--------------+-------------+-----------+-------------+----------+--------+------+------------+---------+---------------+
+3 rows in set (0.00 sec)
+```
 
-7、当前索引是`idx_article_cv`，来看一下SQL执行计划。
+#### 9.1.7. 当前索引是`idx_article_cv`，来看一下SQL执行计划。
 
-![explain](https://img-blog.csdnimg.cn/20200803140951803.png)
+```shell
+mysql> EXPLAIN SELECT id,author_id FROM article WHERE category_id = 1 AND comments > 1 ORDER BY views DESC LIMIT 1;
++----+-------------+---------+------------+-------+----------------+----------------+---------+------+------+----------+------------------------------------+
+| id | select_type | table   | partitions | type  | possible_keys  | key            | key_len | ref  | rows | filtered | Extra                              |
++----+-------------+---------+------------+-------+----------------+----------------+---------+------+------+----------+------------------------------------+
+|  1 | SIMPLE      | article | NULL       | range | idx_article_cv | idx_article_cv | 4       | NULL |    3 |    33.33 | Using index condition; Using where |
++----+-------------+---------+------------+-------+----------------+----------------+---------+------+------+----------+------------------------------------+
+1 row in set, 1 warning (0.00 sec)
+```
 
-## 9.2.两表索引分析
+## 9.2.两表索引分析--->左连接将索引创建在右表上更合适
 
-> 数据准备
+#### 9.2.1. 数据准备
 
 ```sql
 DROP TABLE IF EXISTS `class`;
@@ -856,11 +906,20 @@ CREATE TABLE IF NOT EXISTS `book`(
 
 1、不创建索引的情况下，SQL的执行计划。
 
-![explain](https://img-blog.csdnimg.cn/20200803143557187.png)
+```shell
+mysql> EXPLAIN select * from book left join class on book.card = class.card;
++----+-------------+-------+------------+------+---------------+------+---------+------+------+----------+----------------------------------------------------+
+| id | select_type | table | partitions | type | possible_keys | key  | key_len | ref  | rows | filtered | Extra                                              |
++----+-------------+-------+------------+------+---------------+------+---------+------+------+----------+----------------------------------------------------+
+|  1 | SIMPLE      | book  | NULL       | ALL  | NULL          | NULL | NULL    | NULL |    1 |   100.00 | NULL                                               |
+|  1 | SIMPLE      | class | NULL       | ALL  | NULL          | NULL | NULL    | NULL |    1 |   100.00 | Using where; Using join buffer (Block Nested Loop) |
++----+-------------+-------+------------+------+---------------+------+---------+------+------+----------+----------------------------------------------------+
+2 rows in set, 1 warning (0.00 sec)
+```
 
-`book`和`class`两张表都是没有使用索引，全表扫描，那么如果进行优化，索引是创建在`book`表还是创建在`class`表呢？下面进行大胆的尝试！
+>>>`book`和`class`两张表都是没有使用索引，全表扫描，那么如果进行优化，索引是创建在`book`表还是创建在`class`表呢？下面进行大胆的尝试！
 
-2、左表(`book`表)创建索引。
+#### 9.2.2. 左表(`book`表)创建索引。
 
 创建索引`idx_book_card`
 
@@ -871,28 +930,47 @@ CREATE INDEX idx_book_card ON book(card);
 
 在`book`表中有`idx_book_card`索引的情况下，查看SQL执行计划
 
-![explain](https://img-blog.csdnimg.cn/20200803144429349.png)
+```shell
+mysql> EXPLAIN select * from book left join class on book.card = class.card;
++----+-------------+-------+------------+-------+---------------+---------------+---------+------+------+----------+----------------------------------------------------+
+| id | select_type | table | partitions | type  | possible_keys | key           | key_len | ref  | rows | filtered | Extra                                              |
++----+-------------+-------+------------+-------+---------------+---------------+---------+------+------+----------+----------------------------------------------------+
+|  1 | SIMPLE      | book  | NULL       | index | NULL          | idx_book_card | 4       | NULL |    1 |   100.00 | Using index                                        |
+|  1 | SIMPLE      | class | NULL       | ALL   | NULL          | NULL          | NULL    | NULL |    1 |   100.00 | Using where; Using join buffer (Block Nested Loop) |
++----+-------------+-------+------------+-------+---------------+---------------+---------+------+------+----------+----------------------------------------------------+
+2 rows in set, 1 warning (0.00 sec)
+```
 
 
 
-3、删除`book`表的索引，右表(`class`表)创建索引。
+#### 9.2.3. 删除`book`表的索引，右表(`class`表)创建索引。
 
 创建索引`idx_class_card`
 
 ```sql
+drop index idx_book_card on book;
 /* 在class表创建索引 */
 CREATE INDEX idx_class_card ON class(card);
 ```
 
 在`class`表中有`idx_class_card`索引的情况下，查看SQL执行计划
 
-![explain](https://img-blog.csdnimg.cn/20200803145030597.png)
+```shell
+mysql> EXPLAIN select * from book left join class on book.card = class.card;
++----+-------------+-------+------------+------+----------------+----------------+---------+--------------------+------+----------+-------------+
+| id | select_type | table | partitions | type | possible_keys  | key            | key_len | ref                | rows | filtered | Extra       |
++----+-------------+-------+------------+------+----------------+----------------+---------+--------------------+------+----------+-------------+
+|  1 | SIMPLE      | book  | NULL       | ALL  | NULL           | NULL           | NULL    | NULL               |    1 |   100.00 | NULL        |
+|  1 | SIMPLE      | class | NULL       | ref  | idx_class_card | idx_class_card | 4       | zxc_test.book.card |    1 |   100.00 | Using index |
++----+-------------+-------+------------+------+----------------+----------------+---------+--------------------+------+----------+-------------+
+2 rows in set, 1 warning (0.00 sec)
+```
 
 **由此可见，左连接将索引创建在右表上更合适，右连接将索引创建在左表上更合适。**
 
 ## 9.3.三张表索引分析
 
-> 数据准备
+#### 9.3.1. 数据准备
 
 ```sql
 DROP TABLE IF EXISTS `phone`;
@@ -905,13 +983,23 @@ CREATE TABLE IF NOT EXISTS `phone`(
 
 > 三表连接查询SQL优化
 
-1、不加任何索引，查看SQL执行计划。
+#### 9.3.2. 不加任何索引，查看SQL执行计划。
 
-![explain](https://img-blog.csdnimg.cn/20200803160631786.png)
+```shell
+mysql> EXPLAIN select * from class left join book on class.card = book.card left join phone on book.card = phone.card;
++----+-------------+-------+------------+------+---------------+------+---------+------+------+----------+----------------------------------------------------+
+| id | select_type | table | partitions | type | possible_keys | key  | key_len | ref  | rows | filtered | Extra                                              |
++----+-------------+-------+------------+------+---------------+------+---------+------+------+----------+----------------------------------------------------+
+|  1 | SIMPLE      | class | NULL       | ALL  | NULL          | NULL | NULL    | NULL |    1 |   100.00 | NULL                                               |
+|  1 | SIMPLE      | book  | NULL       | ALL  | NULL          | NULL | NULL    | NULL |    1 |   100.00 | Using where; Using join buffer (Block Nested Loop) |
+|  1 | SIMPLE      | phone | NULL       | ALL  | NULL          | NULL | NULL    | NULL |    1 |   100.00 | Using where; Using join buffer (Block Nested Loop) |
++----+-------------+-------+------------+------+---------------+------+---------+------+------+----------+----------------------------------------------------+
+3 rows in set, 1 warning (0.00 sec)
+```
 
 
 
-2、根据两表查询优化的经验，左连接需要在右表上添加索引，所以尝试在`book`表和`phone`表上添加索引。
+#### 9.3.3. 根据两表查询优化的经验，左连接需要在右表上添加索引，所以尝试在`book`表和`phone`表上添加索引。
 
 ```sql
 /* 在book表创建索引 */
@@ -921,9 +1009,35 @@ CREATE INDEX idx_book_card ON book(card);
 CREATE INDEX idx_phone_card ON phone(card);
 ```
 
-再次执行SQL的执行计划
+>>>再次执行SQL的执行计划
 
-![explain](https://img-blog.csdnimg.cn/20200803161013880.png)
+```shell
+ysql> /* book */
+mysql> CREATE INDEX idx_book_card ON book(card);
+Query OK, 0 rows affected (0.01 sec)
+Records: 0  Duplicates: 0  Warnings: 0
+
+mysql>
+mysql> /* phone */
+mysql> CREATE INDEX idx_phone_card ON phone(card);
+Query OK, 0 rows affected (0.01 sec)
+Records: 0  Duplicates: 0  Warnings: 0
+
+mysql>
+mysql>
+mysql> EXPLAIN select * from class left join book on class.card = book.card left join phone on book.card = phone.card;
++----+-------------+-------+------------+------+----------------+----------------+---------+---------------------+------+----------+-------------+
+| id | select_type | table | partitions | type | possible_keys  | key            | key_len | ref                 | rows | filtered | Extra       |
++----+-------------+-------+------------+------+----------------+----------------+---------+---------------------+------+----------+-------------+
+|  1 | SIMPLE      | class | NULL       | ALL  | NULL           | NULL           | NULL    | NULL                |    1 |   100.00 | NULL        |
+|  1 | SIMPLE      | book  | NULL       | ref  | idx_book_card  | idx_book_card  | 4       | zxc_test.class.card |    1 |   100.00 | Using index |
+|  1 | SIMPLE      | phone | NULL       | ref  | idx_phone_card | idx_phone_card | 4       | zxc_test.book.card  |    1 |   100.00 | Using index |
++----+-------------+-------+------------+------+----------------+----------------+---------+---------------------+------+----------+-------------+
+3 rows in set, 1 warning (0.00 sec)
+```
+
+
+
 
 ## 9.4.结论
 
